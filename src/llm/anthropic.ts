@@ -4,6 +4,8 @@ import type { Candidate } from "../core/suggest";
 import { type DateContext, type MessageParser, type ParseContext, ParsedMessageSchema, SuggestionTextSchema } from "./types";
 
 const MODEL = "claude-haiku-5-5";
+// LINE reply tokens are short-lived, so a slow answer is as bad as none.
+const LLM_TIMEOUT_MS = 20_000;
 
 const SYSTEM_PROMPT = `You read messages sent to a personal meal diary on a chat app and extract what the person wants.
 
@@ -18,7 +20,7 @@ Choose one intent:
 - unknown: anything else.
 
 Fill the fields like this:
-- dishName: the dish as the person wrote it, in their language, or null.
+- dishName: the dish as the person wrote it, in their language, or null. For accept_suggestion, the chosen dish exactly as listed.
 - ingredients: ingredients they named, in their language, in lowercase where that applies. Use an empty list if they named none, and never invent any.
 - cuisine: for a dish you recognise, its cuisine as one lowercase English word such as chinese, thai or italian, otherwise null. Judge by where the dish comes from, not the language of the message.
 - cuisineStated: true only if they said the cuisine themselves, such as "pad kra pao is Thai", otherwise false.
@@ -65,13 +67,13 @@ const describeSuggestions = (suggestions: string[]) =>
     : `\n\nRecent suggestions:\n${suggestions.map((name, index) => `${index + 1}. ${name}`).join("\n")}`;
 
 const describeLink = (linkPreview: string | null) =>
-  linkPreview ? `\n\nLink details:\n<link_details>\n${linkPreview}\n</link_details>` : "";
+  linkPreview ? `\n\nLink details:\n<link_details>\n${linkPreview.replaceAll("<", "")}\n</link_details>` : "";
 
 export class AnthropicParser implements MessageParser {
   private client: Anthropic;
 
   constructor(apiKey: string) {
-    this.client = new Anthropic({ apiKey });
+    this.client = new Anthropic({ apiKey, timeout: LLM_TIMEOUT_MS, maxRetries: 1 });
   }
 
   async parse(text: string, context: ParseContext) {

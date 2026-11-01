@@ -149,6 +149,38 @@ describe("pickSuggestions", () => {
     expect(ranked([candidate], { preferences: [{ kind: "allergy", value: "peanut" }] })).toEqual([]);
   });
 
+  describe("allergies", () => {
+    const allergic = (value: string, ...candidates: Candidate[]) =>
+      ranked([...candidates, dish("safe", { ingredients: ["rice"] })], { preferences: [{ kind: "allergy", value }] });
+
+    it.each([
+      ["cherries", dish("pie", { ingredients: ["cherry"] })],
+      ["peanut", dish("sauce", { ingredients: ["花生醬"] })],
+      ["花生", dish("sauce", { ingredients: ["peanut butter"] })],
+      ["shellfish", dish("noodles", { ingredients: ["prawn"] })],
+      ["海鮮", dish("rice", { ingredients: ["蝦仁"] })],
+      ["海鮮", dish("soup", { ingredients: ["鮭魚"] })],
+      ["seafood", dish("stir fry", { ingredients: ["squid"] })],
+      ["蝦", dish("salad", { ingredients: ["shrimp"] })],
+      ["egg", dish("toast", { ingredients: ["美乃滋"] })],
+      ["乳製品", dish("gratin", { ingredients: ["cheese"] })],
+      ["soy", dish("mapo", { ingredients: ["豆腐"] })],
+      ["gluten", dish("stir fry", { ingredients: ["醬油"] })],
+      ["堅果", dish("cake", { ingredients: ["almonds"] })],
+    ])("%s rules out a related food", (allergy, candidate) => {
+      expect(allergic(allergy, candidate)).toEqual(["safe"]);
+    });
+
+    it("matches the dish name as well as ingredients", () => {
+      expect(allergic("蝦", dish("鮮蝦炒飯"))).toEqual(["safe"]);
+    });
+
+    it("doesn't widen a dislike the way it widens an allergy", () => {
+      const preferences = [{ kind: "dislike", value: "shrimp" }] as const;
+      expect(ranked([dish("crab", { ingredients: ["crab"] })], { preferences: [...preferences] })).toEqual(["crab"]);
+    });
+  });
+
   it("never picks from below the shortlist, however the shuffle falls", () => {
     const top = ["a", "b", "c", "d", "e", "f"].map((name) => dish(name));
     const bottom = dish("eaten today", { lastEatenOn: "2026-10-31" });

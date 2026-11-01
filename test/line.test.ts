@@ -34,13 +34,14 @@ describe("parseMessages", () => {
   const textEvent = {
     type: "message",
     replyToken: "token",
+    webhookEventId: "E1",
     source: { type: "user", userId: "U1" },
     message: { type: "text", text: "hello" },
   };
 
   it("converts text messages to the shared format", () => {
     expect(parseMessages(JSON.stringify({ events: [textEvent] }))).toEqual([
-      { channel: "line", externalUserId: "U1", text: "hello", replyContext: "token" },
+      { channel: "line", externalUserId: "U1", eventId: "E1", text: "hello", replyContext: "token" },
     ]);
   });
 
@@ -49,8 +50,15 @@ describe("parseMessages", () => {
       { ...textEvent, type: "follow" },
       { ...textEvent, message: { type: "sticker" } },
       { ...textEvent, source: { type: "user" } },
+      { ...textEvent, source: { type: "group", userId: "U1" } },
+      { ...textEvent, source: { type: "room", userId: "U1" } },
     ];
     expect(parseMessages(JSON.stringify({ events }))).toEqual([]);
+  });
+
+  it("caps very long messages", () => {
+    const events = [{ ...textEvent, message: { type: "text", text: "x".repeat(5000) } }];
+    expect(parseMessages(JSON.stringify({ events }))[0]?.text).toHaveLength(1000);
   });
 
   it("accepts LINE's empty verification request", () => {

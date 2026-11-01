@@ -7,7 +7,7 @@ function cleanNames(names: string[]): string[] {
   return [...new Set(names.map((name) => name.trim()).filter(Boolean))];
 }
 
-const savedColumns = { id: dishes.id, cuisine: dishes.cuisine, source: dishes.source, shop: dishes.shop };
+const savedColumns = { id: dishes.id, name: dishes.name, cuisine: dishes.cuisine, source: dishes.source, shop: dishes.shop };
 
 export interface DishDetails {
   cuisine?: string | null;
@@ -34,6 +34,7 @@ export async function saveDish(
   dishId: number;
   ingredientCount: number;
   created: boolean;
+  name: string;
   source: Candidate["source"];
   shop: string | null;
 }> {
@@ -104,6 +105,7 @@ export async function saveDish(
     dishId: dish.id,
     ingredientCount: count?.value ?? 0,
     created: Boolean(inserted),
+    name: dish.name,
     source: changes.source ?? dish.source,
     shop: changes.shop ?? dish.shop,
   };

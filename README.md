@@ -12,6 +12,12 @@ Takeout shops are stored per meal in `meals.shop`, and `dishes.shop` holds the l
 
 The last list is kept for 12 hours in `suggestion_sets`, so a reply like "the second one" logs that dish and "something else" moves on to dishes not yet shown.
 
+Only people already in the database get a reply. To add someone, set `ALLOW_NEW_USERS` to `true` in `wrangler.jsonc`, deploy, have them message the bot, then set it back. Each person has a daily message limit, and group chats are ignored.
+
+Allergy matching is broad but only sees saved ingredients and the table in `src/core/allergens.ts`, so it can't guarantee a dish is safe.
+
+Run `npm run backup` to export the production database to `backups/`, which isn't committed.
+
 Dates use the `TIMEZONE` variable in `wrangler.jsonc`.
 
 ## Project layout

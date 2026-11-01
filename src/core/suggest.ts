@@ -1,3 +1,5 @@
+import { relatedTerms } from "./allergens";
+
 const SUGGESTION_COUNT = 3;
 // Picks come at random from this many top dishes, so answers vary between asks.
 const SHORTLIST_SIZE = 6;
@@ -46,13 +48,15 @@ export interface SuggestionRequest {
 const daysBetween = (from: string, to: string) => (Date.parse(to) - Date.parse(from)) / MS_PER_DAY;
 const normalize = (value: string) => value.trim().toLowerCase();
 
+const singular = (value: string) => normalize(value).replace(/ies$/, "y").replace(/e?s$/, "");
+
 // Matches both ways, on substrings and without a plural ending, so "peanuts" rules out
-// "peanut butter" and "peanut". Over-matching only hides a dish, while under-matching
-// could serve an allergen.
-function matchesPreference(dish: Candidate, value: string): boolean {
-  const target = normalize(value);
-  const stem = target.replace(/e?s$/, "") || target;
-  return [dish.name, ...dish.ingredients].map(normalize).some((term) => term.includes(stem) || target.includes(term));
+// "peanut butter" and "peanut". Allergies also cover related foods in both languages.
+// Over-matching only hides a dish, while under-matching could serve an allergen.
+function matchesPreference(dish: Candidate, { kind, value }: Preference): boolean {
+  const avoided = (kind === "allergy" ? relatedTerms(value) : [value]).map(singular).filter(Boolean);
+  const dishTerms = [dish.name, ...dish.ingredients].map(singular).filter(Boolean);
+  return avoided.some((food) => dishTerms.some((term) => term.includes(food) || food.includes(term)));
 }
 
 function fitsOccasion(dish: Candidate, { source, weekend }: SuggestionRequest): boolean {
@@ -103,7 +107,7 @@ export function pickSuggestions(candidates: Candidate[], request: SuggestionRequ
   const shortlist = candidates
     .filter((dish) => dish.slot === "both" || dish.slot === slot)
     .filter((dish) => fitsOccasion(dish, request))
-    .filter((dish) => !preferences.some((preference) => matchesPreference(dish, preference.value)))
+    .filter((dish) => !preferences.some((preference) => matchesPreference(dish, preference)))
     .map((dish) => ({ dish, score: score(dish, today, recentDishes) }))
     .sort((a, b) => b.score - a.score)
     .slice(0, SHORTLIST_SIZE)

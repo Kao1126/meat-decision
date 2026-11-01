@@ -2,6 +2,7 @@ import { Hono } from "hono";
 import { basicAuth } from "hono/basic-auth";
 import { parseMessages, sendReply, verifySignature } from "./channels/line";
 import { localTime } from "./core/dates";
+import { admitMessage } from "./core/gate";
 import { handleMessage } from "./core/handleMessage";
 import { messagesFor } from "./core/messages";
 import { renderDashboard, renderDishPage } from "./dashboard/page";
@@ -22,6 +23,8 @@ export interface Bindings {
   DASHBOARD_PASSWORD?: string;
   // The bot is open to anyone, so the dashboard shows one chosen person's data.
   DASHBOARD_USER_ID: number;
+  // Off by default: strangers who add the bot get no reply and cost nothing.
+  ALLOW_NEW_USERS?: boolean;
 }
 
 export const app = new Hono<{ Bindings: Bindings }>();
@@ -80,6 +83,17 @@ app.post("/webhook/line", async (c) => {
     Promise.all(
       messages.map(async (message) => {
         try {
+          const admission = await admitMessage(c.env.DB, message, {
+            allowNewUsers: c.env.ALLOW_NEW_USERS === true,
+            today: localTime(new Date(), c.env.TIMEZONE).date,
+          });
+          console.log("Message event", { admission, length: message.text.length });
+          if (admission === "ignore") return;
+          if (admission === "limit-reached") {
+            await sendReply(message.replyContext, messagesFor(message.text).dailyLimit, c.env.LINE_CHANNEL_ACCESS_TOKEN);
+            return;
+          }
+
           const reply = await handleMessage(message, {
             db: c.env.DB,
             parser,

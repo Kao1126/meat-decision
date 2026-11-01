@@ -3,6 +3,15 @@ import { drizzle } from "drizzle-orm/d1";
 import type { Channel } from "../channels/types";
 import { channelIdentities, users } from "./schema";
 
+export async function userExists(d1: D1Database, channel: Channel, externalId: string): Promise<boolean> {
+  const identity = await drizzle(d1)
+    .select({ id: channelIdentities.id })
+    .from(channelIdentities)
+    .where(and(eq(channelIdentities.channel, channel), eq(channelIdentities.externalId, externalId)))
+    .get();
+  return Boolean(identity);
+}
+
 export async function findOrCreateUser(d1: D1Database, channel: Channel, externalId: string): Promise<number> {
   const db = drizzle(d1);
   const matchesIdentity = and(eq(channelIdentities.channel, channel), eq(channelIdentities.externalId, externalId));

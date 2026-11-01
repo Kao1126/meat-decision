@@ -5,6 +5,8 @@ export type Channel = "line" | "whatsapp";
 export interface IncomingMessage {
   channel: Channel;
   externalUserId: string;
+  // Unique per delivery attempt's event, used to skip redelivered messages.
+  eventId: string;
   text: string;
   // Opaque value the adapter needs to answer this message.
   replyContext: string;

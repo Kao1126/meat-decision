@@ -2,10 +2,13 @@ import type { IncomingMessage } from "./types";
 
 const REPLY_ENDPOINT = "https://api.line.me/v2/bot/message/reply";
 const MAX_TEXT_LENGTH = 5000;
+// Enough for a message and a link, and it caps what one message can cost.
+const MAX_INCOMING_LENGTH = 1000;
 
 interface LineEvent {
   type: string;
   replyToken?: string;
+  webhookEventId?: string;
   source?: { type: string; userId?: string };
   message?: { type: string; text?: string };
 }
@@ -42,9 +45,18 @@ export function parseMessages(rawBody: string): IncomingMessage[] {
     const userId = event.source?.userId;
     const text = event.message?.text;
     if (event.type !== "message" || event.message?.type !== "text") return [];
-    if (!userId || !text || !event.replyToken) return [];
+    if (event.source?.type !== "user") return [];
+    if (!userId || !text || !event.replyToken || !event.webhookEventId) return [];
 
-    return [{ channel: "line" as const, externalUserId: userId, text, replyContext: event.replyToken }];
+    return [
+      {
+        channel: "line" as const,
+        externalUserId: userId,
+        eventId: event.webhookEventId,
+        text: text.slice(0, MAX_INCOMING_LENGTH),
+        replyContext: event.replyToken,
+      },
+    ];
   });
 }
 

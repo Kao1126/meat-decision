@@ -26,6 +26,12 @@ export async function saveSuggestionSet(d1: D1Database, userId: number, set: Sug
     .onConflictDoUpdate({ target: suggestionSets.userId, set: values });
 }
 
-export async function clearSuggestionSet(d1: D1Database, userId: number): Promise<void> {
-  await drizzle(d1).delete(suggestionSets).where(eq(suggestionSets.userId, userId));
+// True only for the caller that removed it, so two quick picks can't both log a meal.
+export async function clearSuggestionSet(d1: D1Database, userId: number): Promise<boolean> {
+  const removed = await drizzle(d1)
+    .delete(suggestionSets)
+    .where(eq(suggestionSets.userId, userId))
+    .returning({ userId: suggestionSets.userId })
+    .get();
+  return Boolean(removed);
 }

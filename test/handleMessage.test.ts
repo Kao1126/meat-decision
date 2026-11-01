@@ -2,10 +2,11 @@ import { readdirSync, readFileSync } from "node:fs";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { getPlatformProxy } from "wrangler";
 import type { IncomingMessage } from "../src/channels/types";
+import { admitMessage } from "../src/core/gate";
 import { handleMessage } from "../src/core/handleMessage";
 import type { MessageParser, ParsedMessage } from "../src/llm/types";
 
-const message: IncomingMessage = { channel: "line", externalUserId: "U1", text: "ignored", replyContext: "token" };
+const message: IncomingMessage = { channel: "line", externalUserId: "U1", eventId: "E1", text: "ignored", replyContext: "token" };
 // 12:00 on Saturday 31 October in Brisbane.
 const now = new Date("2026-10-31T02:00:00Z");
 
@@ -58,7 +59,7 @@ beforeAll(async () => {
 });
 
 beforeEach(async () => {
-  await db.batch(["dish_ingredients", "meals", "ingredients", "dishes", "preferences", "suggestion_sets", "channel_identities", "users"].map((t) => db.prepare(`DELETE FROM ${t}`)));
+  await db.batch(["dish_ingredients", "meals", "ingredients", "dishes", "preferences", "suggestion_sets", "channel_identities", "users", "webhook_events", "message_usage"].map((t) => db.prepare(`DELETE FROM ${t}`)));
 });
 
 afterAll(() => dispose());
@@ -95,14 +96,14 @@ describe("log_meal", () => {
   it("logs a meal for a dish that isn't saved yet and asks for ingredients", async () => {
     const reply = await send(parsed({ intent: "log_meal", dishName: "Ramen", mealSlot: "lunch" }));
 
-    expect(reply).toBe("ok\nWhat's in it?");
+    expect(reply).toBe("Logged lunch on 2026-10-31: Ramen\nWhat's in it?");
     expect(await rows("SELECT name FROM dishes")).toEqual([{ name: "Ramen" }]);
     expect(await rows("SELECT eaten_on, slot FROM meals")).toEqual([{ eaten_on: "2026-10-31", slot: "lunch" }]);
   });
 
   it("doesn't ask for ingredients the dish already has", async () => {
     await send(parsed({ intent: "save_dish", dishName: "Ramen", ingredients: ["noodles"] }));
-    expect(await send(parsed({ intent: "log_meal", dishName: "ramen" }))).toBe("ok");
+    expect(await send(parsed({ intent: "log_meal", dishName: "ramen" }))).toBe("Logged lunch on 2026-10-31: Ramen");
     expect(await rows("SELECT id FROM dishes")).toHaveLength(1);
   });
 
@@ -253,7 +254,7 @@ describe("follow-ups", () => {
     await saveDishes("Ramen", "Pho");
     const shown = listed(await send(ask));
 
-    expect(await send(accept(2))).toBe("Logged");
+    expect(await send(accept(2))).toBe(`Logged dinner on 2026-10-31: ${shown[1]}`);
     expect(await rows("SELECT d.name, m.eaten_on, m.slot FROM meals m JOIN dishes d ON d.id = m.dish_id")).toEqual([
       { name: shown[1], eaten_on: "2026-10-31", slot: "dinner" },
     ]);
@@ -356,7 +357,7 @@ describe("follow-ups", () => {
   it("asks for ingredients of a picked dish that has none", async () => {
     await send(parsed({ intent: "save_dish", dishName: "Pho" }));
     await send(ask);
-    expect(await send({ ...accept(1), ingredientsQuestion: "What's in pho?" })).toBe("Logged\nWhat's in pho?");
+    expect(await send({ ...accept(1), ingredientsQuestion: "What's in pho?" })).toBe("Logged dinner on 2026-10-31: Pho\nWhat's in pho?");
   });
 });
 
@@ -563,6 +564,127 @@ describe("takeout shops", () => {
   });
 });
 
+describe("picking safely", () => {
+  const ask = parsed({ intent: "suggest", mealSlot: "dinner", reply: "Nothing suitable" });
+  const saveDishes = async (...names: string[]) => {
+    for (const dishName of names) await send(parsed({ intent: "save_dish", dishName, ingredients: ["salt"] }));
+  };
+  const listed = (reply: string) => reply.split("\n").slice(1).map((line) => line.replace(/^\d+\. /, ""));
+  const logged = () => rows<{ name: string }>("SELECT d.name FROM meals m JOIN dishes d ON d.id = m.dish_id");
+
+  it("confirms from what was stored, not the LLM's reply", async () => {
+    await saveDishes("Ramen");
+    await send(ask);
+    const reply = await send(parsed({ intent: "accept_suggestion", suggestionNumber: 1, reply: "Logged pizza" }));
+    expect(reply).toBe("Logged dinner on 2026-10-31: Ramen");
+  });
+
+  it("uses the stored name and the date in a logged meal", async () => {
+    await saveDishes("Ramen");
+    const reply = await send(parsed({ intent: "log_meal", dishName: "ramen", eatenOn: "2026-10-30", mealSlot: "lunch", reply: "wrong" }));
+    expect(reply).toBe("Logged lunch on 2026-10-30: Ramen");
+  });
+
+  it("confirms in Chinese", async () => {
+    await saveDishes("拉麵");
+    const reply = await handleMessage({ ...message, text: "晚餐吃拉麵" }, {
+      db,
+      parser: { parse: async () => parsed({ intent: "log_meal", dishName: "拉麵", mealSlot: "dinner" }), explain: async () => null },
+      timeZone: "Australia/Brisbane",
+      now,
+    });
+    expect(reply).toBe("已記錄 2026-10-31 晚餐：拉麵");
+  });
+
+  it("picks by name when no number is given", async () => {
+    await saveDishes("A", "B");
+    const shown = listed(await send(ask));
+    await send(parsed({ intent: "accept_suggestion", dishName: shown[1]!.toLowerCase() }));
+    expect(await logged()).toEqual([{ name: shown[1] }]);
+  });
+
+  it("logs nothing and asks again when number and name disagree", async () => {
+    await saveDishes("A", "B");
+    const shown = listed(await send(ask));
+    const reply = await send(parsed({ intent: "accept_suggestion", suggestionNumber: 1, dishName: shown[1]! }));
+    expect(reply).toContain("not sure which one");
+    expect(await logged()).toEqual([]);
+    expect(await rows("SELECT user_id FROM suggestion_sets")).toHaveLength(1);
+  });
+
+  it("drops the old list when a new ask finds nothing", async () => {
+    await saveDishes("Home stew");
+    await send(ask);
+    expect(await send({ ...ask, source: "takeout" })).toBe("Nothing suitable");
+    expect(await send(parsed({ intent: "accept_suggestion", suggestionNumber: 1 }))).toContain("recent suggestion");
+    expect(await logged()).toEqual([]);
+  });
+
+  it("keeps the current list when something else finds nothing", async () => {
+    await saveDishes("Ramen");
+    await send(ask);
+    await send(parsed({ intent: "more_suggestions", reply: "No more" }));
+    await send(parsed({ intent: "accept_suggestion", suggestionNumber: 1 }));
+    expect(await logged()).toEqual([{ name: "Ramen" }]);
+  });
+
+  it("logs once when the same pick arrives twice at the same time", async () => {
+    await saveDishes("Ramen");
+    await send(ask);
+    const pick = parsed({ intent: "accept_suggestion", suggestionNumber: 1 });
+    await Promise.all([send(pick), send(pick)]);
+    expect(await logged()).toHaveLength(1);
+  });
+
+  it("only makes a list active after its wording is ready", async () => {
+    await saveDishes("Ramen");
+    let duringExplain: unknown[] = [];
+    await send(ask, now, async () => {
+      duringExplain = await rows("SELECT user_id FROM suggestion_sets");
+      return null;
+    });
+    expect(duringExplain).toEqual([]);
+    expect(await rows("SELECT user_id FROM suggestion_sets")).toHaveLength(1);
+  });
+});
+
+describe("message gate", () => {
+  const today = "2026-10-31";
+  const event = (eventId: string, externalUserId = "U1") => ({ ...message, eventId, externalUserId });
+  const admit = (eventId: string, externalUserId = "U1", allowNewUsers = false) =>
+    admitMessage(db, event(eventId, externalUserId), { allowNewUsers, today });
+
+  it("ignores strangers without creating a user", async () => {
+    expect(await admit("E1", "stranger")).toBe("ignore");
+    expect(await rows("SELECT id FROM users")).toEqual([]);
+  });
+
+  it("admits known users, and new users only when allowed", async () => {
+    await send(parsed({}));
+    expect(await admit("E1")).toBe("process");
+    expect(await admit("E2", "new", true)).toBe("process");
+  });
+
+  it("skips a redelivered event", async () => {
+    await send(parsed({}));
+    expect(await admit("E1")).toBe("process");
+    expect(await admit("E1")).toBe("ignore");
+  });
+
+  it("says so once at the daily limit, then goes quiet", async () => {
+    await send(parsed({}));
+    for (let i = 0; i < 100; i++) await admit(`E${i}`);
+    expect(await admit("over-1")).toBe("limit-reached");
+    expect(await admit("over-2")).toBe("ignore");
+  });
+
+  it("starts again the next day", async () => {
+    await send(parsed({}));
+    await db.prepare("INSERT INTO message_usage (channel, external_id, day, count) VALUES ('line', 'U1', '2026-10-30', 500)").run();
+    expect(await admit("E1")).toBe("process");
+  });
+});
+
 describe("ingredients question for bought food", () => {
   it("isn't asked when saving a takeout dish", async () => {
     expect(await send(parsed({ intent: "save_dish", dishName: "Curry", source: "takeout" }))).toBe("ok");
@@ -571,13 +693,13 @@ describe("ingredients question for bought food", () => {
 
   it("isn't asked when logging a bought meal, even of a dish that's also cooked", async () => {
     await send(parsed({ intent: "save_dish", dishName: "Ramen" }));
-    expect(await send(parsed({ intent: "log_meal", dishName: "Ramen", source: "takeout" }))).toBe("ok");
+    expect(await send(parsed({ intent: "log_meal", dishName: "Ramen", source: "takeout" }))).toBe("Logged lunch on 2026-10-31: Ramen");
   });
 
   it("isn't asked when picking from a takeout list", async () => {
     await send(parsed({ intent: "save_dish", dishName: "Curry", source: "takeout" }));
     await send(parsed({ intent: "suggest", source: "takeout" }));
-    expect(await send(parsed({ intent: "accept_suggestion", suggestionNumber: 1 }))).toBe("ok");
+    expect(await send(parsed({ intent: "accept_suggestion", suggestionNumber: 1 }))).toBe("Logged lunch on 2026-10-31: Curry");
   });
 
   it("is still asked for a dish that can be cooked or bought, when saving it", async () => {

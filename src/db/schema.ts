@@ -126,6 +126,23 @@ export const suggestionSets = sqliteTable("suggestion_sets", {
   suggestedAt: text("suggested_at").notNull(),
 });
 
+// Events already handled, so a redelivered webhook isn't processed twice.
+export const webhookEvents = sqliteTable("webhook_events", {
+  eventId: text("event_id").primaryKey(),
+  receivedAt: timestamp("received_at"),
+});
+
+export const messageUsage = sqliteTable(
+  "message_usage",
+  {
+    channel: text("channel", { enum: ["line", "whatsapp"] }).notNull(),
+    externalId: text("external_id").notNull(),
+    day: text("day").notNull(),
+    count: integer("count").notNull(),
+  },
+  (t) => [primaryKey({ columns: [t.channel, t.externalId, t.day] })],
+);
+
 export const preferences = sqliteTable(
   "preferences",
   {

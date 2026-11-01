@@ -10,7 +10,6 @@ import { defaultSlot, isWeekend, type LocalTime, localTime, resolveEatenOn } fro
 import { type Messages, messagesFor } from "./messages";
 import { type Candidate, pickSuggestions } from "./suggest";
 
-
 export interface Dependencies {
   db: D1Database;
   parser: MessageParser;
@@ -50,11 +49,11 @@ export async function handleMessage(message: IncomingMessage, deps: Dependencies
 
   if (parsed.intent === "save_dish") {
     const { ingredientCount, source } = await saveDish(deps.db, userId, dishName!, parsed.ingredients, parsed);
-    return withIngredientsQuestion(parsed, ingredientCount, source === "takeout");
+    return withIngredientsQuestion(parsed.reply, parsed, ingredientCount, source === "takeout");
   }
 
   if (parsed.intent === "log_meal") {
-    return logParsedMeal(deps.db, userId, dishName!, parsed, time);
+    return logParsedMeal(deps.db, userId, dishName!, parsed, time, texts);
   }
 
   if (parsed.intent === "save_preference") {
@@ -65,11 +64,15 @@ export async function handleMessage(message: IncomingMessage, deps: Dependencies
   }
 
   if (parsed.intent === "accept_suggestion") {
-    const chosen = suggestionSet?.dishes[(parsed.suggestionNumber ?? 0) - 1];
-    if (!suggestionSet || !chosen) return texts.noSuggestion;
+    const listed = suggestionSet?.dishes ?? [];
+    const byNumber = listed[(parsed.suggestionNumber ?? 0) - 1];
+    const byName = listed.find((name) => name.toLowerCase() === dishName?.toLowerCase());
+    if (byNumber && byName && byNumber !== byName) return texts.pickUnclear;
 
+    const chosen = byName ?? byNumber;
     // Cleared first, so repeating the message can't log the meal twice.
-    await clearSuggestionSet(deps.db, userId);
+    if (!suggestionSet || !chosen || !(await clearSuggestionSet(deps.db, userId))) return texts.noSuggestion;
+
     const meal = {
       ...parsed,
       ingredients: [],
@@ -79,7 +82,7 @@ export async function handleMessage(message: IncomingMessage, deps: Dependencies
       eatenOn: null,
       mealSlot: suggestionSet.slot,
     };
-    return logParsedMeal(deps.db, userId, chosen, meal, time, suggestionSet.source === "takeout");
+    return logParsedMeal(deps.db, userId, chosen, meal, time, texts, suggestionSet.source === "takeout");
   }
 
   if (parsed.intent === "suggest") {
@@ -112,23 +115,27 @@ async function logParsedMeal(
   dishName: string,
   parsed: ParsedMessage,
   time: LocalTime,
+  texts: Messages,
   boughtFromList = false,
 ): Promise<string> {
-  const { dishId, ingredientCount, source, shop } = await saveDish(db, userId, dishName, parsed.ingredients, {
+  const { dishId, ingredientCount, name, source, shop } = await saveDish(db, userId, dishName, parsed.ingredients, {
     ...parsed,
     addSource: true,
   });
   const bought = boughtFromList || parsed.source === "takeout" || source === "takeout";
+  const eatenOn = resolveEatenOn(parsed.eatenOn, time.date);
+  const slot = parsed.mealSlot ?? defaultSlot(time.hour);
   await logMeal(db, {
     userId,
     dishId,
-    eatenOn: resolveEatenOn(parsed.eatenOn, time.date),
-    slot: parsed.mealSlot ?? defaultSlot(time.hour),
+    eatenOn,
+    slot,
     rating: resolveRating(parsed.rating),
     shop: bought ? shop : null,
   });
   await removeFromWishlist(db, dishId);
-  return withIngredientsQuestion(parsed, ingredientCount, bought);
+  // Written by code from what was stored, so the reply can't name a different dish or day.
+  return withIngredientsQuestion(texts.logged(slot, eatenOn, name), parsed, ingredientCount, bought);
 }
 
 function resolveRating(rating: number | null): number | null {
@@ -167,9 +174,11 @@ async function suggest(
   );
   const dishes = picks.map((dish) => dish.name);
   console.log("Suggested", { slot, source, alreadyShown, dishes });
-  if (picks.length === 0) return parsed.reply;
-
-  await saveSuggestionSet(deps.db, userId, { dishes, shown: [...alreadyShown, ...dishes], slot, source }, now);
+  if (picks.length === 0) {
+    // A fresh ask replaces any older list, so "the first one" can't pick from it.
+    if (alreadyShown.length === 0) await clearSuggestionSet(deps.db, userId);
+    return parsed.reply;
+  }
 
   // The picks are already right, so a failed explanation only costs the wording.
   const explanation = await deps.parser
@@ -178,6 +187,9 @@ async function suggest(
       console.error("Failed to explain suggestions", error);
       return null;
     });
+
+  // Saved last, so numbers always refer to a list that was actually about to be sent.
+  await saveSuggestionSet(deps.db, userId, { dishes, shown: [...alreadyShown, ...dishes], slot, source }, now);
 
   const hasAllergies = preferences.some((preference) => preference.kind === "allergy");
   return renderSuggestions(picks, explanation, hasAllergies, messagesFor(text));
@@ -196,14 +208,12 @@ function renderSuggestions(
     return dish.sourceUrl ? `${label}\n${dish.sourceUrl}` : label;
   });
   const unchecked = picks.filter((dish) => dish.ingredients.length === 0).map((dish) => dish.name);
-  const warning = hasAllergies && unchecked.length > 0 ? [texts.unknownIngredients(unchecked)] : [];
+  const warning = !hasAllergies ? [] : [unchecked.length > 0 ? texts.unknownIngredients(unchecked) : texts.allergyCheck];
 
   return [explanation?.intro.trim() || texts.defaultIntro, ...lines, ...warning].join("\n");
 }
 
 // People don't know what's in food they bought, so only cooked dishes get the question.
-function withIngredientsQuestion(parsed: ParsedMessage, ingredientCount: number, bought: boolean): string {
-  return ingredientCount === 0 && !bought && parsed.ingredientsQuestion
-    ? `${parsed.reply}\n${parsed.ingredientsQuestion}`
-    : parsed.reply;
+function withIngredientsQuestion(reply: string, parsed: ParsedMessage, ingredientCount: number, bought: boolean): string {
+  return ingredientCount === 0 && !bought && parsed.ingredientsQuestion ? `${reply}\n${parsed.ingredientsQuestion}` : reply;
 }
