@@ -1,0 +1,5 @@
+# Copy to .dev.vars for local development. Never commit .dev.vars.
+LINE_CHANNEL_SECRET=replace-me
+LINE_CHANNEL_ACCESS_TOKEN=replace-me
+ANTHROPIC_API_KEY=replace-me
+DASHBOARD_PASSWORD=replace-me

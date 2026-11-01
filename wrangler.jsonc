@@ -1,0 +1,16 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "meal-decider",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-10-01",
+  "observability": { "enabled": true },
+  "vars": { "TIMEZONE": "Australia/Brisbane", "DASHBOARD_USER_ID": 1 },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "meal-decider",
+      "database_id": "b9b4fa16-5108-445a-86ca-fe4d1962b7b6",
+      "migrations_dir": "migrations"
+    }
+  ]
+}
